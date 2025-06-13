@@ -1,4 +1,3 @@
-# main.py - обновлённая версия для Railway
 from fastapi import FastAPI, Request, HTTPException
 import httpx
 import json
@@ -197,34 +196,3 @@ if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", 8000))
     uvicorn.run(app, host="0.0.0.0", port=port)
-
-
-# requirements.txt
-fastapi==0.104.1
-uvicorn[standard]==0.24.0
-httpx==0.25.2
-python-dotenv==1.0.0
-
-
-# railway.json (опционально, для настройки)
-{
-  "$schema": "https://railway.app/railway.schema.json",
-  "build": {
-    "builder": "NIXPACKS"
-  },
-  "deploy": {
-    "startCommand": "uvicorn main:app --host 0.0.0.0 --port $PORT",
-    "restartPolicyType": "ON_FAILURE",
-    "restartPolicyMaxRetries": 10
-  }
-}
-
-
-# .gitignore
-.env
-__pycache__/
-*.pyc
-.pytest_cache/
-venv/
-.vscode/
-.idea/
