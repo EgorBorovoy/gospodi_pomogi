@@ -2,7 +2,7 @@ from fastapi import FastAPI, Request, HTTPException
 import httpx
 import json
 from datetime import datetime
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 import os
 from dotenv import load_dotenv
 import logging
@@ -25,9 +25,10 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "")
 WHITEBIT_API_KEY = os.getenv("WHITEBIT_API_KEY")
 WHITEBIT_API_SECRET = os.getenv("WHITEBIT_API_SECRET")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # URL вашего сервера, например https://your-app.up.railway.app/webhook
 
 # Проверяем, что настройки есть
-if not all([TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, WHITEBIT_API_KEY, WHITEBIT_API_SECRET]):
+if not all([TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, WHITEBIT_API_KEY, WHITEBIT_API_SECRET, WEBHOOK_URL]):
     logger.error("Missing required environment variables")
 
 # Создаём приложение
@@ -46,19 +47,46 @@ COMMANDS = {
     "/help": "❓ Показать справку по командам"
 }
 
-async def setup_telegram_commands():
-    """Установка команд в меню Telegram бота"""
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/setMyCommands"
-    commands = [{"command": cmd.replace("/", ""), "description": desc} for cmd, desc in COMMANDS.items()]
+async def setup_telegram_webhook():
+    """Настройка вебхука для Telegram"""
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/setWebhook"
+    webhook_url = f"{WEBHOOK_URL}/webhook"
     
     try:
-        response = await client.post(url, json={"commands": commands})
+        # Сначала удалим текущий вебхук
+        await client.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/deleteWebhook")
+        
+        # Установим новый вебхук
+        response = await client.post(url, json={
+            "url": webhook_url,
+            "allowed_updates": ["message"]
+        })
         result = response.json()
-        logger.info(f"Setup Telegram commands result: {result}")
+        logger.info(f"Webhook setup result: {result}")
         return result.get("ok", False)
     except Exception as e:
-        logger.error(f"Error setting up Telegram commands: {e}")
+        logger.error(f"Error setting up webhook: {e}")
         return False
+
+def create_keyboard_markup() -> Dict:
+    """Создание клавиатуры с командами"""
+    keyboard = []
+    row = []
+    for i, (cmd, desc) in enumerate(COMMANDS.items()):
+        # Создаем кнопку с командой
+        button = {"text": desc.split(' ', 1)[1]}  # Берем описание без эмодзи
+        row.append(button)
+        
+        # Формируем ряды по 2 кнопки
+        if len(row) == 2 or i == len(COMMANDS) - 1:
+            keyboard.append(row)
+            row = []
+    
+    return {
+        "keyboard": keyboard,
+        "resize_keyboard": True,
+        "one_time_keyboard": False
+    }
 
 async def send_telegram_message(text: str, disable_notification: bool = False):
     """Отправка сообщения в Telegram"""
@@ -67,17 +95,14 @@ async def send_telegram_message(text: str, disable_notification: bool = False):
         "chat_id": TELEGRAM_CHAT_ID,
         "text": text,
         "parse_mode": "HTML",
-        "disable_notification": disable_notification
+        "disable_notification": disable_notification,
+        "reply_markup": create_keyboard_markup()
     }
     
     try:
-        # DEBUG: Логируем отправляемое сообщение
         logger.info(f"Sending message to Telegram: {text[:100]}...")
-        
         response = await client.post(url, json=payload)
         result = response.json()
-        
-        # DEBUG: Логируем ответ от Telegram
         logger.info(f"Telegram API response: {result}")
         
         if not result.get("ok"):
@@ -136,9 +161,9 @@ async def process_telegram_command(text: str, chat_id: str) -> str:
 async def startup_event():
     """При запуске отправляем уведомление в Telegram"""
     try:
-        # Устанавливаем команды в меню Telegram
-        commands_setup = await setup_telegram_commands()
-        logger.info(f"Telegram commands setup: {'success' if commands_setup else 'failed'}")
+        # Настраиваем вебхук
+        webhook_setup = await setup_telegram_webhook()
+        logger.info(f"Telegram webhook setup: {'success' if webhook_setup else 'failed'}")
         
         # Проверяем подключение к WhiteBit API
         api_status = await whitebit.test_connection()
