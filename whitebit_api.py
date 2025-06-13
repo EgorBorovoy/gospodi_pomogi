@@ -4,6 +4,9 @@ import json
 import time
 from typing import Dict, Any
 import httpx
+import logging
+
+logger = logging.getLogger(__name__)
 
 class WhiteBitAPI:
     """Класс для работы с API биржи WhiteBit"""
@@ -31,26 +34,48 @@ class WhiteBitAPI:
         
     async def get_balance(self) -> Dict[str, Any]:
         """Получение баланса аккаунта"""
-        endpoint = "/api/v4/trade-account/balance"
-        data = {}
-        
-        signature = self._generate_signature(endpoint, data)
-        
-        headers = {
-            "Content-Type": "application/json",
-            "X-TXC-APIKEY": self.api_key,
-            "X-TXC-PAYLOAD": json.dumps(data),
-            "X-TXC-SIGNATURE": signature
-        }
-        
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                f"{self.base_url}{endpoint}",
-                headers=headers,
-                json=data
-            )
+        try:
+            endpoint = "/api/v4/trade-account/balance"
+            data = {}
             
-            if response.status_code == 200:
-                return response.json()
-            else:
-                raise Exception(f"Ошибка получения баланса: {response.text}") 
+            signature = self._generate_signature(endpoint, data)
+            
+            headers = {
+                "Content-Type": "application/json",
+                "X-TXC-APIKEY": self.api_key,
+                "X-TXC-PAYLOAD": json.dumps(data),
+                "X-TXC-SIGNATURE": signature
+            }
+            
+            logger.info("Отправка запроса на получение баланса...")
+            
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    f"{self.base_url}{endpoint}",
+                    headers=headers,
+                    json=data
+                )
+                
+                logger.info(f"Получен ответ от API. Статус: {response.status_code}")
+                
+                if response.status_code == 200:
+                    return response.json()
+                else:
+                    error_msg = f"Ошибка получения баланса. Статус: {response.status_code}, Ответ: {response.text}"
+                    logger.error(error_msg)
+                    raise Exception(error_msg)
+                    
+        except Exception as e:
+            logger.error(f"Ошибка при получении баланса: {str(e)}")
+            raise Exception(f"Ошибка при получении баланса: {str(e)}")
+            
+    async def test_connection(self) -> bool:
+        """Проверка подключения к API"""
+        try:
+            # Используем публичный эндпоинт для проверки
+            async with httpx.AsyncClient() as client:
+                response = await client.get(f"{self.base_url}/api/v4/public/time")
+                return response.status_code == 200
+        except Exception as e:
+            logger.error(f"Ошибка проверки подключения: {str(e)}")
+            return False 

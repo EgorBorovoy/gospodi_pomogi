@@ -36,6 +36,12 @@ client = httpx.AsyncClient(timeout=30.0)
 # Создаём WhiteBit API клиент
 whitebit = WhiteBitAPI(WHITEBIT_API_KEY, WHITEBIT_API_SECRET)
 
+# Список доступных команд
+COMMANDS = {
+    "/start": "📋 Показать список команд",
+    "/balance": "💰 Показать баланс на бирже",
+    "/help": "❓ Показать справку по командам"
+}
 
 async def send_telegram_message(text: str, disable_notification: bool = False):
     """Отправка сообщения в Telegram"""
@@ -57,15 +63,57 @@ async def send_telegram_message(text: str, disable_notification: bool = False):
         logger.error(f"Error sending to Telegram: {e}")
         return None
 
+def get_commands_list() -> str:
+    """Формирование списка команд"""
+    message = "🤖 <b>Доступные команды:</b>\n\n"
+    for cmd, desc in COMMANDS.items():
+        message += f"{cmd} - {desc}\n"
+    return message
+
+async def process_telegram_command(text: str) -> str:
+    """Обработка команд от пользователя из Telegram"""
+    try:
+        logger.info(f"Processing command: {text}")  # Добавим логирование
+        
+        if text.startswith('/start') or text.startswith('/help'):
+            return get_commands_list()
+            
+        elif text.startswith('/balance'):
+            # Получаем баланс
+            balance = await whitebit.get_balance()
+            # Форматируем ответ
+            message = "💰 <b>Баланс на WhiteBit:</b>\n\n"
+            for currency, data in balance.items():
+                if float(data.get('available', 0)) > 0:
+                    message += f"• {currency}: {data['available']} (в ордерах: {data.get('freeze', 0)})\n"
+            return message
+            
+        else:
+            return "❌ Неизвестная команда. Отправьте /help для списка команд."
+            
+    except Exception as e:
+        logger.error(f"Error processing command: {e}")
+        return f"❌ Ошибка: {str(e)}"
 
 @app.on_event("startup")
 async def startup_event():
     """При запуске отправляем уведомление в Telegram"""
-    message = "🚀 <b>Webhook сервис запущен!</b>\n\n"
-    message += f"⏰ Время: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-    message += "✅ Готов принимать вебхуки"
-    await send_telegram_message(message)
-
+    try:
+        # Проверяем подключение к WhiteBit API
+        api_status = await whitebit.test_connection()
+        
+        message = "🚀 <b>Бот запущен!</b>\n\n"
+        if api_status:
+            message += "✅ Подключение к WhiteBit API успешно\n\n"
+        else:
+            message += "❌ Ошибка подключения к WhiteBit API\n\n"
+            
+        message += get_commands_list()
+        await send_telegram_message(message)
+        
+    except Exception as e:
+        logger.error(f"Ошибка при запуске: {e}")
+        await send_telegram_message(f"❌ Ошибка при запуске бота: {str(e)}")
 
 @app.get("/")
 async def root():
@@ -77,31 +125,10 @@ async def root():
         "timestamp": datetime.now().isoformat()
     }
 
-
 @app.get("/health")
 async def health_check():
     """Health check для мониторинга"""
     return {"status": "healthy", "timestamp": datetime.now().isoformat()}
-
-
-async def process_telegram_command(text: str) -> str:
-    """Обработка команд от пользователя из Telegram"""
-    try:
-        if text.startswith('/balance'):
-            # Получаем баланс
-            balance = await whitebit.get_balance()
-            # Форматируем ответ
-            message = "💰 <b>Баланс на WhiteBit:</b>\n\n"
-            for currency, data in balance.items():
-                if float(data.get('available', 0)) > 0:
-                    message += f"• {currency}: {data['available']} (в ордерах: {data.get('freeze', 0)})\n"
-            return message
-        else:
-            return "❌ Неизвестная команда"
-    except Exception as e:
-        logger.error(f"Error processing command: {e}")
-        return f"❌ Ошибка: {str(e)}"
-
 
 @app.post("/webhook")
 async def receive_webhook(request: Request, secret: Optional[str] = None):
@@ -113,16 +140,17 @@ async def receive_webhook(request: Request, secret: Optional[str] = None):
         
         # Получаем тело запроса
         body = await request.json()
+        logger.info(f"Received webhook body: {json.dumps(body)[:200]}")  # Добавим логирование
         
         # Проверяем, не команда ли это из Telegram
         if "message" in body and "text" in body["message"]:
-            command_response = await process_telegram_command(body["message"]["text"])
+            command_text = body["message"]["text"]
+            logger.info(f"Received Telegram command: {command_text}")  # Добавим логирование
+            command_response = await process_telegram_command(command_text)
             await send_telegram_message(command_response)
             return {"status": "success", "message": "Command processed"}
         
         # Если не команда, обрабатываем как обычный вебхук
-        logger.info(f"Received webhook: {json.dumps(body)[:200]}...")
-        
         message = f"🔔 <b>Новый вебхук!</b>\n\n"
         message += f"⏰ Время: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
         message += f"📊 Данные:\n<pre>{json.dumps(body, indent=2, ensure_ascii=False)[:3000]}</pre>"
