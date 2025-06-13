@@ -10,7 +10,10 @@ from pydantic import BaseModel
 from whitebit_api import WhiteBitAPI
 
 # Настройка логирования
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
 # Загружаем переменные окружения
@@ -19,7 +22,7 @@ load_dotenv()
 # Настройки
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "")  # Опциональный секрет для безопасности
+WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "")
 WHITEBIT_API_KEY = os.getenv("WHITEBIT_API_KEY")
 WHITEBIT_API_SECRET = os.getenv("WHITEBIT_API_SECRET")
 
@@ -43,6 +46,20 @@ COMMANDS = {
     "/help": "❓ Показать справку по командам"
 }
 
+async def setup_telegram_commands():
+    """Установка команд в меню Telegram бота"""
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/setMyCommands"
+    commands = [{"command": cmd.replace("/", ""), "description": desc} for cmd, desc in COMMANDS.items()]
+    
+    try:
+        response = await client.post(url, json={"commands": commands})
+        result = response.json()
+        logger.info(f"Setup Telegram commands result: {result}")
+        return result.get("ok", False)
+    except Exception as e:
+        logger.error(f"Error setting up Telegram commands: {e}")
+        return False
+
 async def send_telegram_message(text: str, disable_notification: bool = False):
     """Отправка сообщения в Telegram"""
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -54,8 +71,15 @@ async def send_telegram_message(text: str, disable_notification: bool = False):
     }
     
     try:
+        # DEBUG: Логируем отправляемое сообщение
+        logger.info(f"Sending message to Telegram: {text[:100]}...")
+        
         response = await client.post(url, json=payload)
         result = response.json()
+        
+        # DEBUG: Логируем ответ от Telegram
+        logger.info(f"Telegram API response: {result}")
+        
         if not result.get("ok"):
             logger.error(f"Telegram API error: {result}")
         return result
@@ -70,17 +94,30 @@ def get_commands_list() -> str:
         message += f"{cmd} - {desc}\n"
     return message
 
-async def process_telegram_command(text: str) -> str:
+async def process_telegram_command(text: str, chat_id: str) -> str:
     """Обработка команд от пользователя из Telegram"""
     try:
-        logger.info(f"Processing command: {text}")  # Добавим логирование
+        # DEBUG: Логируем входящую команду и chat_id
+        logger.info(f"Processing command: {text} from chat_id: {chat_id}")
+        
+        # Проверяем, что команда пришла от разрешенного чата
+        if chat_id != TELEGRAM_CHAT_ID:
+            logger.warning(f"Unauthorized chat_id: {chat_id}")
+            return "⛔️ Доступ запрещен"
         
         if text.startswith('/start') or text.startswith('/help'):
             return get_commands_list()
             
         elif text.startswith('/balance'):
+            # DEBUG: Логируем запрос баланса
+            logger.info("Requesting balance from WhiteBit API...")
+            
             # Получаем баланс
             balance = await whitebit.get_balance()
+            
+            # DEBUG: Логируем полученный баланс
+            logger.info(f"Received balance: {balance}")
+            
             # Форматируем ответ
             message = "💰 <b>Баланс на WhiteBit:</b>\n\n"
             for currency, data in balance.items():
@@ -99,8 +136,13 @@ async def process_telegram_command(text: str) -> str:
 async def startup_event():
     """При запуске отправляем уведомление в Telegram"""
     try:
+        # Устанавливаем команды в меню Telegram
+        commands_setup = await setup_telegram_commands()
+        logger.info(f"Telegram commands setup: {'success' if commands_setup else 'failed'}")
+        
         # Проверяем подключение к WhiteBit API
         api_status = await whitebit.test_connection()
+        logger.info(f"WhiteBit API connection test: {'success' if api_status else 'failed'}")
         
         message = "🚀 <b>Бот запущен!</b>\n\n"
         if api_status:
@@ -140,13 +182,17 @@ async def receive_webhook(request: Request, secret: Optional[str] = None):
         
         # Получаем тело запроса
         body = await request.json()
-        logger.info(f"Received webhook body: {json.dumps(body)[:200]}")  # Добавим логирование
+        logger.info(f"Received webhook body: {json.dumps(body)}")  # DEBUG: Полное логирование
         
         # Проверяем, не команда ли это из Telegram
         if "message" in body and "text" in body["message"]:
             command_text = body["message"]["text"]
-            logger.info(f"Received Telegram command: {command_text}")  # Добавим логирование
-            command_response = await process_telegram_command(command_text)
+            chat_id = str(body["message"]["chat"]["id"])
+            
+            # DEBUG: Логируем детали сообщения
+            logger.info(f"Received Telegram message: text='{command_text}', chat_id={chat_id}")
+            
+            command_response = await process_telegram_command(command_text, chat_id)
             await send_telegram_message(command_response)
             return {"status": "success", "message": "Command processed"}
         
