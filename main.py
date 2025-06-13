@@ -6,6 +6,7 @@ from typing import Dict, Any, Optional
 import os
 from dotenv import load_dotenv
 import logging
+from pydantic import BaseModel
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
@@ -111,34 +112,38 @@ async def receive_webhook(request: Request, secret: Optional[str] = None):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/trading-signal")
-async def trading_signal(
-    symbol: str,
-    side: str,
-    amount: float,
-    price: Optional[float] = None,
+from pydantic import BaseModel
+
+# Модель для торгового сигнала
+class TradingSignalRequest(BaseModel):
+    symbol: str
+    side: str
+    amount: float
+    price: Optional[float] = None
     secret: Optional[str] = None
-):
+
+@app.post("/trading-signal")
+async def trading_signal(request: TradingSignalRequest):
     """Специальный эндпоинт для торговых сигналов"""
     # Проверка секрета
-    if WEBHOOK_SECRET and secret != WEBHOOK_SECRET:
+    if WEBHOOK_SECRET and request.secret != WEBHOOK_SECRET:
         raise HTTPException(status_code=401, detail="Invalid secret")
     
     # Валидация
-    if side not in ["buy", "sell"]:
+    if request.side not in ["buy", "sell"]:
         raise HTTPException(status_code=400, detail="Side must be 'buy' or 'sell'")
     
-    if amount <= 0:
+    if request.amount <= 0:
         raise HTTPException(status_code=400, detail="Amount must be positive")
     
     # Формируем красивое сообщение
     message = f"📈 <b>Торговый сигнал</b>\n\n"
-    message += f"• Пара: <code>{symbol}</code>\n"
-    message += f"• Действие: <b>{'🟢 ПОКУПКА' if side == 'buy' else '🔴 ПРОДАЖА'}</b>\n"
-    message += f"• Количество: <code>{amount}</code>\n"
+    message += f"• Пара: <code>{request.symbol}</code>\n"
+    message += f"• Действие: <b>{'🟢 ПОКУПКА' if request.side == 'buy' else '🔴 ПРОДАЖА'}</b>\n"
+    message += f"• Количество: <code>{request.amount}</code>\n"
     
-    if price:
-        message += f"• Цена: <code>{price}</code>\n"
+    if request.price:
+        message += f"• Цена: <code>{request.price}</code>\n"
         message += f"• Тип: Лимитный ордер\n"
     else:
         message += f"• Тип: Рыночный ордер\n"
@@ -148,15 +153,15 @@ async def trading_signal(
     # Отправляем в Telegram
     await send_telegram_message(message)
     
-    logger.info(f"Trading signal processed: {symbol} {side} {amount} @ {price}")
+    logger.info(f"Trading signal processed: {request.symbol} {request.side} {request.amount} @ {request.price}")
     
     return {
         "status": "success",
         "signal": {
-            "symbol": symbol,
-            "side": side,
-            "amount": amount,
-            "price": price,
+            "symbol": request.symbol,
+            "side": request.side,
+            "amount": request.amount,
+            "price": request.price,
             "timestamp": datetime.now().isoformat()
         }
     }
