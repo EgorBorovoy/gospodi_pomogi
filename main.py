@@ -7,6 +7,7 @@ import os
 from dotenv import load_dotenv
 import logging
 from pydantic import BaseModel
+from whitebit_api import WhiteBitAPI
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
@@ -19,16 +20,21 @@ load_dotenv()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "")  # Опциональный секрет для безопасности
+WHITEBIT_API_KEY = os.getenv("WHITEBIT_API_KEY")
+WHITEBIT_API_SECRET = os.getenv("WHITEBIT_API_SECRET")
 
 # Проверяем, что настройки есть
-if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-    logger.error("Missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID")
+if not all([TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, WHITEBIT_API_KEY, WHITEBIT_API_SECRET]):
+    logger.error("Missing required environment variables")
 
 # Создаём приложение
 app = FastAPI(title="Trading Webhook to Telegram")
 
 # Клиент для HTTP запросов
 client = httpx.AsyncClient(timeout=30.0)
+
+# Создаём WhiteBit API клиент
+whitebit = WhiteBitAPI(WHITEBIT_API_KEY, WHITEBIT_API_SECRET)
 
 
 async def send_telegram_message(text: str, disable_notification: bool = False):
@@ -78,9 +84,28 @@ async def health_check():
     return {"status": "healthy", "timestamp": datetime.now().isoformat()}
 
 
+async def process_telegram_command(text: str) -> str:
+    """Обработка команд от пользователя из Telegram"""
+    try:
+        if text.startswith('/balance'):
+            # Получаем баланс
+            balance = await whitebit.get_balance()
+            # Форматируем ответ
+            message = "💰 <b>Баланс на WhiteBit:</b>\n\n"
+            for currency, data in balance.items():
+                if float(data.get('available', 0)) > 0:
+                    message += f"• {currency}: {data['available']} (в ордерах: {data.get('freeze', 0)})\n"
+            return message
+        else:
+            return "❌ Неизвестная команда"
+    except Exception as e:
+        logger.error(f"Error processing command: {e}")
+        return f"❌ Ошибка: {str(e)}"
+
+
 @app.post("/webhook")
 async def receive_webhook(request: Request, secret: Optional[str] = None):
-    """Универсальный эндпоинт для любых вебхуков"""
+    """Универсальный эндпоинт для вебхуков"""
     try:
         # Проверка секрета (если настроен)
         if WEBHOOK_SECRET and secret != WEBHOOK_SECRET:
@@ -89,15 +114,19 @@ async def receive_webhook(request: Request, secret: Optional[str] = None):
         # Получаем тело запроса
         body = await request.json()
         
-        # Логируем
+        # Проверяем, не команда ли это из Telegram
+        if "message" in body and "text" in body["message"]:
+            command_response = await process_telegram_command(body["message"]["text"])
+            await send_telegram_message(command_response)
+            return {"status": "success", "message": "Command processed"}
+        
+        # Если не команда, обрабатываем как обычный вебхук
         logger.info(f"Received webhook: {json.dumps(body)[:200]}...")
         
-        # Формируем красивое сообщение
         message = f"🔔 <b>Новый вебхук!</b>\n\n"
         message += f"⏰ Время: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
         message += f"📊 Данные:\n<pre>{json.dumps(body, indent=2, ensure_ascii=False)[:3000]}</pre>"
         
-        # Отправляем в Telegram
         await send_telegram_message(message)
         
         return {"status": "success", "message": "Sent to Telegram"}
